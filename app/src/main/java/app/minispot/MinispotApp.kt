@@ -32,11 +32,10 @@ class MinispotApp : Application() {
         player.onLikedChanged = { uri, isLiked -> liked.onLikedChanged(uri, isLiked) }
     }
 
+    suspend fun userId(): String = prefs.userId ?: api.me().getString("id").also { prefs.userId = it }
+
     /** Liked Songs as a playable context for App Remote. */
-    suspend fun likedSongsUri(): String {
-        val id = prefs.userId ?: api.me().getString("id").also { prefs.userId = it }
-        return "spotify:user:$id:collection"
-    }
+    suspend fun likedSongsUri(): String = player.likedContextUri ?: "spotify:user:${userId()}:collection"
 
     companion object {
         lateinit var instance: MinispotApp

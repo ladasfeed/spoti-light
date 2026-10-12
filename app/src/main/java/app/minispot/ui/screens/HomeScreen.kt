@@ -53,7 +53,7 @@ fun HomeScreen(
     fun playLiked(shuffle: Boolean) {
         scope.launch {
             try {
-                app.player.play(app.likedSongsUri(), shuffle)
+                app.player.playLiked(app.userId(), shuffle)
             } catch (e: Exception) {
                 Toast.makeText(context, e.message ?: "Couldn't start playback", Toast.LENGTH_LONG).show()
             }

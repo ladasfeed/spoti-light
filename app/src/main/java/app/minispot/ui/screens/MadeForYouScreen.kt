@@ -18,6 +18,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -30,12 +31,17 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.minispot.MinispotApp
+import app.minispot.api.Track
 import app.minispot.ui.components.EmptyText
 import app.minispot.ui.components.ErrorBox
 import app.minispot.ui.components.Loading
 import app.minispot.ui.components.SectionHeader
 import app.minispot.ui.components.TopBar
+import app.minispot.ui.components.TrackRow
 import com.spotify.protocol.types.ListItem
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
@@ -50,6 +56,11 @@ data class DaylistState(
     /** Fallback when no daylist was found: what the Spotify app offers as "made for you". */
     val others: List<ListItem> = emptyList(),
     val error: String? = null,
+    /** When Spotify won't list the playlist itself: the playing track and what plays next. */
+    val playingNow: Track? = null,
+    val upNext: List<Track> = emptyList(),
+    val queueLoaded: Boolean = false,
+    val queueError: String? = null,
 )
 
 /**
@@ -66,6 +77,7 @@ class MadeForYouViewModel : ViewModel() {
     init { load() }
 
     fun load() {
+        queueFor = null
         viewModelScope.launch {
             state.value = DaylistState(loading = true)
             state.value = try {
@@ -86,8 +98,42 @@ class MadeForYouViewModel : ViewModel() {
 
     fun playTrack(index: Int, track: ListItem) {
         val uri = state.value.contextUri
-        if (uri != null && track.uri.orEmpty().startsWith("spotify:track:")) player.playAt(uri, index)
+        if (uri != null && track.uri.orEmpty().startsWith("spotify:track:")) player.playAt(uri, index, fallbackTrackUri = track.uri)
         else player.playItem(track)
+    }
+
+    /** Jumps to the [index]-th upcoming track, staying inside the daylist. */
+    fun playUpNext(index: Int) = player.skipAhead(index + 1)
+
+    private var queueFor: String? = null
+    private var queueJob: Job? = null
+
+    /**
+     * Spotify hides the contents of its own playlists from the Web API, but it does share the
+     * player queue: the playing track plus the next ones. That's what the screen lists instead.
+     */
+    fun refreshQueue(currentTrackUri: String?) {
+        if (state.value.loading || state.value.contextUri == null || state.value.tracks.isNotEmpty()) return
+        if (currentTrackUri == null || currentTrackUri == queueFor) return
+        queueFor = currentTrackUri
+        queueJob?.cancel()
+        queueJob = viewModelScope.launch {
+            try {
+                // The Web API learns about a track change a moment after the Spotify app does.
+                delay(500)
+                var (current, next) = app.api.queue()
+                if (current?.uri != currentTrackUri) {
+                    delay(1500)
+                    app.api.queue().let { current = it.first; next = it.second }
+                }
+                state.value = state.value.copy(playingNow = current, upNext = next, queueLoaded = true, queueError = null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                queueFor = null
+                state.value = state.value.copy(queueLoaded = true, queueError = e.message ?: "Couldn't load the queue")
+            }
+        }
     }
 
     private fun autoplay() {
@@ -172,8 +218,16 @@ fun MadeForYouScreen(onBack: () -> Unit, vm: MadeForYouViewModel = viewModel()) 
     val playerContext by app.player.context.collectAsState()
 
     // The Spotify app reports the playing context's title too; prefer it once the daylist is playing.
-    val liveTitle = playerContext?.takeIf { it.uri == state.contextUri }?.let { daylistName(it.title, it.subtitle) }
+    val daylistPlaying = state.contextUri != null && (
+        playerContext?.uri.sameContextAs(state.contextUri) ||
+            playerContext?.title.orEmpty().contains("daylist", ignoreCase = true)
+        )
+    val liveTitle = playerContext?.takeIf { daylistPlaying }?.let { daylistName(it.title, it.subtitle) }
     val title = liveTitle ?: state.title
+
+    LaunchedEffect(nowPlaying?.trackUri, daylistPlaying, state.loading) {
+        if (daylistPlaying) vm.refreshQueue(nowPlaying?.trackUri)
+    }
 
     Column(Modifier.fillMaxSize()) {
         TopBar("", onBack) {
@@ -198,7 +252,14 @@ fun MadeForYouScreen(onBack: () -> Unit, vm: MadeForYouViewModel = viewModel()) 
                     Spacer(Modifier.height(12.dp))
                 }
                 if (state.tracks.isEmpty()) {
-                    EmptyText("Spotify didn't share the track list for this playlist, but it's playing.")
+                    when {
+                        !daylistPlaying -> EmptyText("Play the daylist to see its tracks.")
+                        state.queueError != null && state.playingNow == null -> ErrorBox(state.queueError!!) {
+                            vm.refreshQueue(nowPlaying?.trackUri)
+                        }
+                        !state.queueLoaded -> Loading()
+                        else -> QueueList(state, nowPlaying?.trackUri, vm::playUpNext)
+                    }
                 } else {
                     LazyColumn(Modifier.fillMaxSize()) {
                         itemsIndexed(state.tracks, key = { i, it -> "$i-${it.id}" }) { i, item ->
@@ -224,6 +285,26 @@ fun MadeForYouScreen(onBack: () -> Unit, vm: MadeForYouViewModel = viewModel()) 
         }
     }
 }
+
+@Composable
+private fun QueueList(state: DaylistState, currentUri: String?, onPlayUpNext: (Int) -> Unit) {
+    LazyColumn(Modifier.fillMaxSize()) {
+        state.playingNow?.let { track ->
+            item(key = "now") { SectionHeader("Now playing") }
+            item(key = "now-${track.uri}") { TrackRow(track, isCurrent = true, onClick = {}) }
+        }
+        if (state.upNext.isNotEmpty()) {
+            item(key = "next") { SectionHeader("Up next") }
+            itemsIndexed(state.upNext, key = { i, t -> "next-$i-${t.uri}" }) { i, track ->
+                TrackRow(track, isCurrent = track.uri == currentUri, onClick = { onPlayUpNext(i) })
+            }
+        }
+    }
+}
+
+/** Same playlist, whether written as "spotify:playlist:ID" or "spotify:user:…:playlist:ID". */
+private fun String?.sameContextAs(other: String?): Boolean =
+    this != null && other != null && substringAfterLast(':') == other.substringAfterLast(':')
 
 @Composable
 private fun ContentRow(item: ListItem, isCurrent: Boolean, onClick: () -> Unit) {

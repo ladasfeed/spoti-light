@@ -171,7 +171,7 @@ fun ArtistScreen(artistId: String, initialName: String, onBack: () -> Unit) {
     fun playTrack(t: Track) {
         val albumUri = t.albumUri
         val index = t.albumIndex
-        if (albumUri != null && index != null) app.player.playAt(albumUri, index) else app.player.play(t.uri)
+        if (albumUri != null && index != null) app.player.playAt(albumUri, index, fallbackTrackUri = t.uri) else app.player.play(t.uri)
     }
 
     Column(Modifier.fillMaxSize()) {

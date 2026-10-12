@@ -26,6 +26,7 @@ private val SCOPES = listOf(
     "user-follow-read",
     "user-library-read",
     "user-library-modify",
+    "user-read-playback-state",
     "app-remote-control",
 ).joinToString(" ")
 
@@ -35,7 +36,8 @@ class AuthException(message: String) : Exception(message)
 class SpotifyAuth(private val prefs: Prefs) {
     private val mutex = Mutex()
 
-    private val _loggedIn = MutableStateFlow(prefs.refreshToken != null)
+    // A login made before new scopes were added counts as logged out, so the user signs in once more.
+    private val _loggedIn = MutableStateFlow(prefs.refreshToken != null && prefs.grantedScopes == SCOPES)
     val loggedIn: StateFlow<Boolean> = _loggedIn
 
     fun startLogin(context: Context) {
@@ -72,6 +74,7 @@ class SpotifyAuth(private val prefs: Prefs) {
                 )
             )
             prefs.pkceVerifier = null
+            prefs.grantedScopes = SCOPES
             _loggedIn.value = true
             null
         } catch (e: Exception) {

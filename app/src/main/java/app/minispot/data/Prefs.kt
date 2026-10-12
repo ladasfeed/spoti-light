@@ -24,6 +24,11 @@ class Prefs(context: Context) {
         get() = sp.getLong("token_expires_at", 0L)
         set(v) = sp.edit().putLong("token_expires_at", v).apply()
 
+    /** Scopes requested at the last successful login. */
+    var grantedScopes: String?
+        get() = sp.getString("granted_scopes", null)
+        set(v) = sp.edit().putString("granted_scopes", v).apply()
+
     var pkceVerifier: String?
         get() = sp.getString("pkce_verifier", null)
         set(v) = sp.edit().putString("pkce_verifier", v).apply()

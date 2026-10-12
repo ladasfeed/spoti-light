@@ -26,6 +26,19 @@ import app.minispot.ui.components.TopBar
 import app.minispot.ui.components.TrackRow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import app.minispot.data.ReleasesPage
+import kotlinx.coroutines.Job
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.lazy.itemsIndexed
 import java.time.Instant
@@ -107,22 +120,55 @@ fun RecentsScreen(onBack: () -> Unit, vm: RecentsViewModel = viewModel()) {
 // ---------- Last releases ----------
 
 class ReleasesViewModel : ViewModel() {
-    val state = MutableStateFlow(ListState<Track>())
+    private val repo = MinispotApp.instance.releases
 
-    init { load(force = false) }
+    data class State(
+        val tracks: List<Track> = emptyList(),
+        val loading: Boolean = false,
+        val hasMore: Boolean = true,
+        val progress: String? = null,
+        val error: String? = null,
+    )
 
-    fun load(force: Boolean) {
-        viewModelScope.launch {
-            state.value = state.value.copy(loading = true, error = null, progress = null)
-            state.value = try {
-                val tracks = MinispotApp.instance.releases.lastReleases(force) { done, total ->
-                    state.value = state.value.copy(progress = "Checking artists: $done/$total")
-                }
-                ListState(tracks, loading = false)
+    val state = MutableStateFlow(State())
+    private var job: Job? = null
+
+    init { show(repo.current()); loadMore() }
+
+    /** Fetches the next chunk (about 10 tracks). */
+    fun loadMore() {
+        if (job?.isActive == true || !state.value.hasMore) return
+        job = viewModelScope.launch {
+            state.value = state.value.copy(loading = true, error = null)
+            try {
+                show(repo.loadMore(minNewTracks = 10) { show(it, loading = true) })
             } catch (e: Exception) {
-                ListState(loading = false, error = e.message)
+                show(repo.current(), error = e.message)
             }
         }
+    }
+
+    fun refresh() {
+        job?.cancel()
+        job = viewModelScope.launch {
+            repo.restart(dropCache = true)
+            state.value = State(loading = true)
+            try {
+                show(repo.loadMore(minNewTracks = 10) { show(it, loading = true) })
+            } catch (e: Exception) {
+                show(repo.current(), error = e.message)
+            }
+        }
+    }
+
+    private fun show(page: ReleasesPage, loading: Boolean = false, error: String? = null) {
+        state.value = State(
+            tracks = page.tracks,
+            loading = loading,
+            hasMore = page.hasMore,
+            progress = if (page.totalArtists == Int.MAX_VALUE) null else "Checked ${page.checkedArtists} of ${page.totalArtists} artists",
+            error = error,
+        )
     }
 }
 
@@ -131,29 +177,50 @@ fun ReleasesScreen(onBack: () -> Unit, vm: ReleasesViewModel = viewModel()) {
     val app = MinispotApp.instance
     val state by vm.state.collectAsState()
     val nowPlaying by app.player.nowPlaying.collectAsState()
-    val dateFormat = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.ENGLISH)
+    val dateFormat = DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH)
+    val listState = rememberLazyListState()
+    val nearEnd by remember {
+        derivedStateOf {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            last >= listState.layoutInfo.totalItemsCount - 3
+        }
+    }
+    LaunchedEffect(nearEnd, state.tracks.size, state.loading) {
+        if (nearEnd && !state.loading && state.error == null) vm.loadMore()
+    }
 
     Column(Modifier.fillMaxSize()) {
         TopBar("Last releases", onBack) {
-            IconButton(onClick = { vm.load(force = true) }, enabled = !state.loading) {
-                Icon(Icons.Filled.Refresh, "Refresh")
-            }
+            IconButton(onClick = vm::refresh) { Icon(Icons.Filled.Refresh, "Refresh") }
         }
-        when {
-            state.loading -> Loading(state.progress ?: "Loading followed artists…")
-            state.error != null -> ErrorBox(state.error!!) { vm.load(force = true) }
-            state.items.isEmpty() -> EmptyText("Nothing new from your artists in the last two weeks")
-            else -> LazyColumn(Modifier.fillMaxSize()) {
-                items(state.items, key = { it.uri }) { t ->
-                    TrackRow(
-                        t,
-                        isCurrent = nowPlaying?.trackUri == t.uri,
-                        onClick = {
-                            val album = t.albumUri
-                            val index = t.albumIndex
-                            if (album != null && index != null) app.player.playAt(album, index) else app.player.play(t.uri)
-                        },
-                        trailing = t.releaseDate?.let { runCatching { LocalDate.parse(it).format(dateFormat) }.getOrNull() },
+        if (state.tracks.isEmpty() && !state.loading && !state.hasMore && state.error == null) {
+            EmptyText("Nothing new from your artists in the last two weeks")
+            return@Column
+        }
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+            items(state.tracks, key = { it.uri }) { t ->
+                TrackRow(
+                    t,
+                    isCurrent = nowPlaying?.trackUri == t.uri,
+                    onClick = {
+                        val album = t.albumUri
+                        val index = t.albumIndex
+                        if (album != null && index != null) app.player.playAt(album, index, fallbackTrackUri = t.uri)
+                        else app.player.play(t.uri)
+                    },
+                    trailing = t.releaseDate?.let { runCatching { LocalDate.parse(it).format(dateFormat) }.getOrNull() },
+                )
+            }
+            item(key = "footer") {
+                when {
+                    state.error != null -> ErrorBox(state.error!!, vm::loadMore)
+                    state.loading -> Loading(state.progress ?: "Loading followed artists…")
+                    state.hasMore -> TextButton(onClick = vm::loadMore, modifier = Modifier.fillMaxWidth()) { Text("Load more") }
+                    else -> Text(
+                        state.progress.orEmpty(),
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
                     )
                 }
             }
@@ -210,7 +277,7 @@ fun MyTracksScreen(onBack: () -> Unit, vm: MyTracksViewModel = viewModel()) {
                             // Play inside Liked Songs so the next tracks follow in the same order.
                             scope.launch {
                                 runCatching { app.likedSongsUri() }
-                                    .onSuccess { app.player.playAt(it, index) }
+                                    .onSuccess { app.player.playAt(it, index, fallbackTrackUri = t.uri) }
                                     .onFailure { app.player.play(t.uri) }
                             }
                         },

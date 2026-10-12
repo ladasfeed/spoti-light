@@ -51,6 +51,14 @@ class SpotifyApi(private val auth: SpotifyAuth) {
     suspend fun playlistName(id: String): String? =
         runCatching { get("/playlists/$id", "fields" to "name").optString("name") }.getOrNull()?.takeIf { it.isNotBlank() }
 
+    /** What's playing now and what plays next (the context's upcoming tracks included). */
+    suspend fun queue(): Pair<Track?, List<Track>> {
+        val json = get("/me/player/queue")
+        val current = json.optJSONObject("currently_playing")?.let { runCatching { parseTrack(it) }.getOrNull() }
+        val next = json.optJSONArray("queue")?.mapObjects(::parseTrack).orEmpty()
+        return current to next
+    }
+
     suspend fun followedArtists(): List<Artist> {
         val result = mutableListOf<Artist>()
         var after: String? = null
@@ -123,11 +131,22 @@ class SpotifyApi(private val auth: SpotifyAuth) {
             when {
                 code in 200..299 -> return if (body.isBlank()) JSONObject() else JSONObject(body)
                 code == 401 && attempt == 1 -> forceRefresh = true
-                code == 429 && attempt <= 3 -> delay(((retryAfter?.toLongOrNull() ?: 2L).coerceAtMost(15L)) * 1000)
+                code == 429 -> {
+                    // Short waits are retried; long ones (dev-mode quota) are reported instead of hanging.
+                    val wait = retryAfter?.toLongOrNull() ?: 2L
+                    if (wait > 20 || attempt > 3) throw ApiException(429, rateLimitMessage(wait))
+                    delay(wait * 1000)
+                }
                 code >= 500 && attempt <= 2 -> delay(1000)
                 else -> throw ApiException(code, errorMessage(code, body))
             }
         }
+    }
+
+    private fun rateLimitMessage(waitSeconds: Long): String {
+        val minutes = (waitSeconds + 59) / 60
+        return if (waitSeconds <= 60) "Spotify rate limit hit, try again in a minute."
+        else "Spotify rate limit hit, try again in about $minutes min."
     }
 
     private fun errorMessage(code: Int, body: String): String {

@@ -20,7 +20,9 @@ import com.spotify.protocol.types.PlayerState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -82,6 +84,15 @@ class RemotePlayer(private val appContext: Context, private val prefs: Prefs) {
     /** What is playing as a whole (playlist, album…), with the title the Spotify app shows. */
     private val _context = MutableStateFlow<PlayerContext?>(null)
     val context: StateFlow<PlayerContext?> = _context
+
+    /** Command failures, shown to the user as a short message instead of failing silently. */
+    private val _errors = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val errors: SharedFlow<String> = _errors
+
+    private fun report(action: String): (Throwable) -> Unit = { e ->
+        Log.w("Minispot", "$action failed", e)
+        _errors.tryEmit("$action failed: ${e.message ?: e.javaClass.simpleName}")
+    }
 
     /** Called after a like/unlike from the player succeeds, so local caches can follow. */
     var onLikedChanged: ((uri: String, liked: Boolean) -> Unit)? = null
@@ -192,20 +203,87 @@ class RemotePlayer(private val appContext: Context, private val prefs: Prefs) {
     // --- Commands ---
 
     fun play(uri: String, shuffle: Boolean? = null) = withRemote { r ->
+        val start = { r.playerApi.play(uri).setErrorCallback(report("Play")) }
         if (shuffle != null) {
             r.playerApi.setShuffle(shuffle)
-                .setResultCallback { r.playerApi.play(uri) }
-                .setErrorCallback { r.playerApi.play(uri) }
+                .setResultCallback { start() }
+                .setErrorCallback { start() }
         } else {
-            r.playerApi.play(uri)
+            start()
         }
     }
 
-    /** Starts a context (album/playlist) at a given position, so playback continues inside it. */
-    fun playAt(contextUri: String, index: Int) = withRemote { r ->
+    /**
+     * Starts a context (album/playlist/Liked Songs) at a given position, so playback continues
+     * inside it. If Spotify refuses that context, the track itself is played instead.
+     */
+    fun playAt(contextUri: String, index: Int, fallbackTrackUri: String? = null) = withRemote { r ->
+        val start = {
+            r.playerApi.skipToIndex(contextUri, index).setErrorCallback { e ->
+                if (fallbackTrackUri != null) {
+                    Log.w("Minispot", "skipToIndex($contextUri, $index) failed, playing the track", e)
+                    r.playerApi.play(fallbackTrackUri).setErrorCallback(report("Play"))
+                } else {
+                    report("Play")(e)
+                }
+            }
+        }
         r.playerApi.setShuffle(false)
-            .setResultCallback { r.playerApi.skipToIndex(contextUri, index) }
-            .setErrorCallback { r.playerApi.skipToIndex(contextUri, index) }
+            .setResultCallback { start() }
+            .setErrorCallback { start() }
+    }
+
+    /** The Liked Songs URI that Spotify accepted last time, reused to start at a given track. */
+    var likedContextUri: String? = null
+        private set
+
+    /**
+     * Plays Liked Songs. Spotify has no documented URI for it, so known forms are tried in turn,
+     * then the Liked Songs entry from the Spotify app's own library browser.
+     */
+    fun playLiked(userId: String, shuffle: Boolean) = withRemote { r ->
+        val candidates = listOfNotNull(likedContextUri, "spotify:user:$userId:collection", "spotify:collection:tracks").distinct()
+        fun viaLibrary(lastError: Throwable) {
+            scope.launch {
+                val item = runCatching { findLikedSongsItem() }.getOrNull()
+                if (item != null) {
+                    likedContextUri = item.uri
+                    r.contentApi.playContentItem(item).setErrorCallback(report("Play Liked Songs"))
+                } else {
+                    report("Play Liked Songs")(lastError)
+                }
+            }
+        }
+        fun attempt(i: Int, lastError: Throwable?) {
+            if (i >= candidates.size) return viaLibrary(lastError ?: IllegalStateException("no URI worked"))
+            r.playerApi.play(candidates[i])
+                .setResultCallback { likedContextUri = candidates[i] }
+                .setErrorCallback { attempt(i + 1, it) }
+        }
+        r.playerApi.setShuffle(shuffle)
+            .setResultCallback { attempt(0, null) }
+            .setErrorCallback { attempt(0, null) }
+    }
+
+    private suspend fun findLikedSongsItem(): ListItem? {
+        fun ListItem.isLiked() = uri.orEmpty().endsWith(":collection") || uri.orEmpty().contains("collection:tracks")
+        val top = recommendedItems()
+        top.firstOrNull { it.isLiked() }?.let { return it }
+        for (section in top.filter { it.hasChildren }.take(10)) {
+            runCatching { childrenOf(section) }.getOrDefault(emptyList()).firstOrNull { it.isLiked() }?.let { return it }
+        }
+        return null
+    }
+
+    /** Skips forward [count] tracks, one after another, staying in the current context. */
+    fun skipAhead(count: Int) = withRemote { r ->
+        fun step(left: Int) {
+            if (left <= 0) return
+            r.playerApi.skipNext()
+                .setResultCallback { step(left - 1) }
+                .setErrorCallback(report("Skip"))
+        }
+        step(count)
     }
 
     fun togglePause() = withRemote { r ->
@@ -235,7 +313,7 @@ class RemotePlayer(private val appContext: Context, private val prefs: Prefs) {
     suspend fun childrenOf(item: ListItem, limit: Int = 50): List<ListItem> =
         awaitRemote().contentApi.getChildrenOfItem(item, limit, 0).awaitCall().items.toList()
 
-    fun playItem(item: ListItem) = withRemote { it.contentApi.playContentItem(item) }
+    fun playItem(item: ListItem) = withRemote { it.contentApi.playContentItem(item).setErrorCallback(report("Play")) }
 
     private suspend fun awaitRemote(): SpotifyAppRemote = withTimeout(20_000) {
         suspendCancellableCoroutine { cont ->
