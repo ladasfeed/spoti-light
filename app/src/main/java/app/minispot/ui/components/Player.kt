@@ -100,7 +100,7 @@ private fun LikeButton(liked: Boolean?, onToggle: () -> Unit, size: Dp = 24.dp) 
     IconButton(onClick = onToggle, enabled = liked != null) {
         Icon(
             if (liked == true) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-            contentDescription = if (liked == true) "Удалить из любимых" else "Добавить в любимые",
+            contentDescription = if (liked == true) "Remove from Liked Songs" else "Save to Liked Songs",
             tint = if (liked == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.size(size),
         )
@@ -123,9 +123,9 @@ fun PlayerBar(
     val bg = MaterialTheme.colorScheme.surfaceVariant
     if (nowPlaying == null) {
         val message = when (status) {
-            RemoteStatus.SpotifyNotInstalled -> "Установи приложение Spotify: оно воспроизводит музыку"
-            is RemoteStatus.Failed -> "Нет связи со Spotify: ${status.message}"
-            RemoteStatus.Connecting -> "Подключаюсь к Spotify…"
+            RemoteStatus.SpotifyNotInstalled -> "Install the Spotify app: it does the actual playback"
+            is RemoteStatus.Failed -> "Can't reach Spotify: ${status.message}"
+            RemoteStatus.Connecting -> "Connecting to Spotify…"
             else -> null
         } ?: return
         Row(
@@ -138,7 +138,7 @@ fun PlayerBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(message, Modifier.weight(1f), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (status is RemoteStatus.Failed) TextButton(onClick = onReconnect) { Text("Ещё раз") }
+            if (status is RemoteStatus.Failed) TextButton(onClick = onReconnect) { Text("Retry") }
         }
         return
     }
@@ -167,11 +167,11 @@ fun PlayerBar(
                 )
             }
             LikeButton(liked, onToggleLike)
-            IconButton(onClick = onPrev, enabled = nowPlaying.canSkipPrev) { Icon(Icons.Filled.SkipPrevious, "Назад") }
+            IconButton(onClick = onPrev, enabled = nowPlaying.canSkipPrev) { Icon(Icons.Filled.SkipPrevious, "Previous") }
             IconButton(onClick = onTogglePause) {
-                Icon(if (nowPlaying.isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause, "Пауза/плей")
+                Icon(if (nowPlaying.isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause, "Play/Pause")
             }
-            IconButton(onClick = onNext, enabled = nowPlaying.canSkipNext) { Icon(Icons.Filled.SkipNext, "Вперёд") }
+            IconButton(onClick = onNext, enabled = nowPlaying.canSkipNext) { Icon(Icons.Filled.SkipNext, "Next") }
         }
         LinearProgressIndicator(
             progress = { if (nowPlaying.durationMs > 0) position.toFloat() / nowPlaying.durationMs else 0f },
@@ -277,7 +277,7 @@ fun PlayerSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onPrev, enabled = nowPlaying.canSkipPrev, modifier = Modifier.size(56.dp)) {
-                    Icon(Icons.Filled.SkipPrevious, "Назад", Modifier.size(36.dp))
+                    Icon(Icons.Filled.SkipPrevious, "Previous", Modifier.size(36.dp))
                 }
                 Box(
                     Modifier
@@ -289,13 +289,13 @@ fun PlayerSheet(
                 ) {
                     Icon(
                         if (nowPlaying.isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
-                        contentDescription = "Пауза/плей",
+                        contentDescription = "Play/Pause",
                         tint = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.size(40.dp),
                     )
                 }
                 IconButton(onClick = onNext, enabled = nowPlaying.canSkipNext, modifier = Modifier.size(56.dp)) {
-                    Icon(Icons.Filled.SkipNext, "Вперёд", Modifier.size(36.dp))
+                    Icon(Icons.Filled.SkipNext, "Next", Modifier.size(36.dp))
                 }
             }
             Spacer(Modifier.height(24.dp))

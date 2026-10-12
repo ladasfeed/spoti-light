@@ -15,6 +15,7 @@ import com.spotify.protocol.client.CallResult
 import com.spotify.protocol.client.Subscription
 import com.spotify.protocol.types.Image
 import com.spotify.protocol.types.ListItem
+import com.spotify.protocol.types.PlayerContext
 import com.spotify.protocol.types.PlayerState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +63,7 @@ class RemotePlayer(private val appContext: Context, private val prefs: Prefs) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var remote: SpotifyAppRemote? = null
     private var stateSub: Subscription<PlayerState>? = null
+    private var contextSub: Subscription<PlayerContext>? = null
     private val pending = mutableListOf<(SpotifyAppRemote) -> Unit>()
 
     private val _status = MutableStateFlow<RemoteStatus>(RemoteStatus.Disconnected)
@@ -76,6 +78,13 @@ class RemotePlayer(private val appContext: Context, private val prefs: Prefs) {
     /** Whether the current track is in Liked Songs; null while unknown. */
     private val _liked = MutableStateFlow<Boolean?>(null)
     val liked: StateFlow<Boolean?> = _liked
+
+    /** What is playing as a whole (playlist, album…), with the title the Spotify app shows. */
+    private val _context = MutableStateFlow<PlayerContext?>(null)
+    val context: StateFlow<PlayerContext?> = _context
+
+    /** Called after a like/unlike from the player succeeds, so local caches can follow. */
+    var onLikedChanged: ((uri: String, liked: Boolean) -> Unit)? = null
 
     private var lastActivity: WeakReference<Context>? = null
     private var lastTrackUri: String? = null
@@ -116,12 +125,16 @@ class RemotePlayer(private val appContext: Context, private val prefs: Prefs) {
     fun disconnect() {
         stateSub?.cancel()
         stateSub = null
+        contextSub?.cancel()
+        contextSub = null
         remote?.let { SpotifyAppRemote.disconnect(it) }
         remote = null
         _status.value = RemoteStatus.Disconnected
     }
 
     private fun subscribe(appRemote: SpotifyAppRemote) {
+        contextSub?.cancel()
+        contextSub = appRemote.playerApi.subscribeToPlayerContext().setEventCallback { _context.value = it }
         stateSub?.cancel()
         stateSub = appRemote.playerApi.subscribeToPlayerState().setEventCallback { state ->
             val track = state.track
@@ -209,6 +222,7 @@ class RemotePlayer(private val appContext: Context, private val prefs: Prefs) {
         _liked.value = !wasLiked
         withRemote { r ->
             val call = if (wasLiked) r.userApi.removeFromLibrary(uri) else r.userApi.addToLibrary(uri)
+            call.setResultCallback { onLikedChanged?.invoke(uri, !wasLiked) }
             call.setErrorCallback { _liked.value = wasLiked }
         }
     }
@@ -228,7 +242,7 @@ class RemotePlayer(private val appContext: Context, private val prefs: Prefs) {
             scope.launch {
                 withRemote { if (cont.isActive) cont.resume(it) }
                 if (_status.value is RemoteStatus.Failed || _status.value == RemoteStatus.SpotifyNotInstalled) {
-                    if (cont.isActive) cont.resumeWithException(IllegalStateException("Нет связи с приложением Spotify"))
+                    if (cont.isActive) cont.resumeWithException(IllegalStateException("Can't reach the Spotify app"))
                 }
             }
         }

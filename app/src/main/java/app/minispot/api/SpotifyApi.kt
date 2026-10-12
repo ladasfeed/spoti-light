@@ -40,6 +40,17 @@ class SpotifyApi(private val auth: SpotifyAuth) {
         }
     }
 
+    /** Liked Songs, newest first. */
+    suspend fun savedTracks(offset: Int, limit: Int = 50): Page<Track> {
+        val json = get("/me/tracks", "limit" to "$limit", "offset" to "$offset")
+        val items = json.getJSONArray("items").mapObjects { parseTrack(it.getJSONObject("track")) }
+        return Page(items, json.optString("next").isNotNull())
+    }
+
+    /** Playlist name only; contents of playlists the user doesn't own are hidden from dev-mode apps. */
+    suspend fun playlistName(id: String): String? =
+        runCatching { get("/playlists/$id", "fields" to "name").optString("name") }.getOrNull()?.takeIf { it.isNotBlank() }
+
     suspend fun followedArtists(): List<Artist> {
         val result = mutableListOf<Artist>()
         var after: String? = null
@@ -122,9 +133,9 @@ class SpotifyApi(private val auth: SpotifyAuth) {
     private fun errorMessage(code: Int, body: String): String {
         val msg = runCatching { JSONObject(body).getJSONObject("error").getString("message") }.getOrNull()
         return when (code) {
-            403 -> "Spotify отказал в доступе (403). Проверь, что аккаунт добавлен в User Management приложения. $msg"
-            429 -> "Слишком много запросов к Spotify, попробуй чуть позже."
-            else -> "Ошибка Spotify $code: ${msg ?: body.take(200)}"
+            403 -> "Spotify denied access (403). Make sure your account is in the app's User Management. ${msg.orEmpty()}"
+            429 -> "Too many requests to Spotify, try again in a bit."
+            else -> "Spotify error $code: ${msg ?: body.take(200)}"
         }
     }
 

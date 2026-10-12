@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -48,7 +49,7 @@ fun TopBar(title: String, onBack: (() -> Unit)?, actions: @Composable RowScope.(
     ) {
         if (onBack != null) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
             }
         } else {
             Spacer(Modifier.width(12.dp))
@@ -99,6 +100,7 @@ fun TrackRow(
     isCurrent: Boolean,
     onClick: () -> Unit,
     trailing: String? = null,
+    saved: Boolean = false,
 ) {
     Row(
         Modifier
@@ -123,6 +125,15 @@ fun TrackRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 fontSize = 13.sp,
+            )
+        }
+        if (saved) {
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                Icons.Filled.Favorite,
+                contentDescription = "Saved",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp),
             )
         }
         if (trailing != null) {
@@ -167,7 +178,7 @@ fun ErrorBox(message: String, onRetry: (() -> Unit)?) {
     ) {
         Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (onRetry != null) {
-            TextButton(onClick = onRetry) { Text("Повторить") }
+            TextButton(onClick = onRetry) { Text("Retry") }
         }
     }
 }

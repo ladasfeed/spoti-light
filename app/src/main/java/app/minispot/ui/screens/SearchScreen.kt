@@ -65,17 +65,22 @@ data class SearchState(
     val loading: Boolean = false,
     val hasMore: Boolean = false,
     val error: String? = null,
+    /** Offset of the next Web API page; local matches don't count towards it. */
+    val apiOffset: Int = 0,
 )
 
 @OptIn(FlowPreview::class)
 class SearchViewModel : ViewModel() {
     private val api = MinispotApp.instance.api
+    private val liked = MinispotApp.instance.liked
     val query = MutableStateFlow("")
     val mode = MutableStateFlow(SearchMode.Tracks)
     val state = MutableStateFlow(SearchState())
     private var moreJob: Job? = null
 
     init {
+        // Warm up the Liked Songs cache so saved tracks can be ranked first.
+        viewModelScope.launch { runCatching { liked.ensureLoaded(); liked.sync() } }
         viewModelScope.launch {
             combine(query.debounce(350), mode) { q, m -> q.trim() to m }
                 .distinctUntilChanged()
@@ -88,17 +93,43 @@ class SearchViewModel : ViewModel() {
                     state.value = SearchState(loading = true)
                     state.value = try {
                         if (m == SearchMode.Tracks) {
+                            val local = localMatches(q)
                             val page = api.searchTracks(q, 0)
-                            SearchState(tracks = page.items, hasMore = page.hasMore)
+                            SearchState(
+                                tracks = rank(local + page.items),
+                                hasMore = page.hasMore,
+                                apiOffset = page.items.size,
+                            )
                         } else {
                             val page = api.searchArtists(q, 0)
-                            SearchState(artists = page.items, hasMore = page.hasMore)
+                            SearchState(artists = page.items, hasMore = page.hasMore, apiOffset = page.items.size)
                         }
                     } catch (e: Exception) {
-                        SearchState(error = e.message)
+                        // Offline or rate-limited: saved tracks still match locally.
+                        val local = if (m == SearchMode.Tracks) localMatches(q) else emptyList()
+                        if (local.isNotEmpty()) SearchState(tracks = local) else SearchState(error = e.message)
                     }
                 }
         }
+    }
+
+    private fun savedUris(): Set<String> = liked.tracks.value?.mapTo(HashSet()) { it.uri } ?: emptySet()
+
+    /** Liked tracks whose title, artist or album contain every word of the query. */
+    private fun localMatches(q: String): List<Track> {
+        val words = q.lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (words.isEmpty()) return emptyList()
+        return liked.tracks.value.orEmpty().filter { t ->
+            val hay = "${t.name} ${t.artistLine} ${t.albumName}".lowercase()
+            words.all { it in hay }
+        }.take(30)
+    }
+
+    /** Saved tracks first, keeping each group's own order. */
+    private fun rank(tracks: List<Track>): List<Track> {
+        val saved = savedUris()
+        val unique = tracks.distinctBy { it.uri }
+        return unique.filter { it.uri in saved } + unique.filter { it.uri !in saved }
     }
 
     fun loadMore() {
@@ -109,11 +140,19 @@ class SearchViewModel : ViewModel() {
         moreJob = viewModelScope.launch {
             try {
                 state.value = if (m == SearchMode.Tracks) {
-                    val page = api.searchTracks(q, s.tracks.size)
-                    s.copy(tracks = (s.tracks + page.items).distinctBy { it.uri }, hasMore = page.hasMore && page.items.isNotEmpty())
+                    val page = api.searchTracks(q, s.apiOffset)
+                    s.copy(
+                        tracks = (s.tracks + page.items).distinctBy { it.uri },
+                        hasMore = page.hasMore && page.items.isNotEmpty(),
+                        apiOffset = s.apiOffset + page.items.size,
+                    )
                 } else {
-                    val page = api.searchArtists(q, s.artists.size)
-                    s.copy(artists = (s.artists + page.items).distinctBy { it.id }, hasMore = page.hasMore && page.items.isNotEmpty())
+                    val page = api.searchArtists(q, s.apiOffset)
+                    s.copy(
+                        artists = (s.artists + page.items).distinctBy { it.id },
+                        hasMore = page.hasMore && page.items.isNotEmpty(),
+                        apiOffset = s.apiOffset + page.items.size,
+                    )
                 }
             } catch (_: Exception) {
                 state.value = s.copy(hasMore = false)
@@ -129,6 +168,8 @@ fun SearchScreen(onBack: () -> Unit, onArtist: (Artist) -> Unit, vm: SearchViewM
     val mode by vm.mode.collectAsState()
     val state by vm.state.collectAsState()
     val nowPlaying by app.player.nowPlaying.collectAsState()
+    val likedTracks by app.liked.tracks.collectAsState()
+    val savedUris = remember(likedTracks) { likedTracks?.mapTo(HashSet()) { it.uri } ?: emptySet<String>() }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { if (vm.query.value.isEmpty()) focus.requestFocus() }
 
@@ -141,11 +182,11 @@ fun SearchScreen(onBack: () -> Unit, onArtist: (Artist) -> Unit, vm: SearchViewM
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
                 .focusRequester(focus),
-            placeholder = { Text("Что будем слушать?") },
+            placeholder = { Text("Search...") },
             leadingIcon = { Icon(Icons.Filled.Search, null) },
             trailingIcon = {
                 if (query.isNotEmpty()) {
-                    IconButton(onClick = { vm.query.value = "" }) { Icon(Icons.Filled.Clear, "Очистить") }
+                    IconButton(onClick = { vm.query.value = "" }) { Icon(Icons.Filled.Clear, "Clear") }
                 }
             },
             singleLine = true,
@@ -177,11 +218,16 @@ fun SearchScreen(onBack: () -> Unit, onArtist: (Artist) -> Unit, vm: SearchViewM
         when {
             state.loading -> Loading()
             state.error != null -> ErrorBox(state.error!!, null)
-            query.isNotBlank() && state.tracks.isEmpty() && state.artists.isEmpty() -> EmptyText("Ничего не нашлось")
+            query.isNotBlank() && state.tracks.isEmpty() && state.artists.isEmpty() -> EmptyText("Nothing found")
             else -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 if (mode == SearchMode.Tracks) {
                     items(state.tracks, key = { it.uri }) { t ->
-                        TrackRow(t, isCurrent = nowPlaying?.trackUri == t.uri, onClick = { app.player.play(t.uri) })
+                        TrackRow(
+                            t,
+                            isCurrent = nowPlaying?.trackUri == t.uri,
+                            onClick = { app.player.play(t.uri) },
+                            saved = t.uri in savedUris,
+                        )
                     }
                 } else {
                     items(state.artists, key = { it.id }) { a -> ArtistRow(a) { onArtist(a) } }

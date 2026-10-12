@@ -177,7 +177,7 @@ fun ArtistScreen(artistId: String, initialName: String, onBack: () -> Unit) {
     Column(Modifier.fillMaxSize()) {
         TopBar("", onBack) {
             IconButton(onClick = { vm.setSearchOpen(!search.open) }) {
-                Icon(if (search.open) Icons.Filled.Close else Icons.Filled.Search, "Поиск по исполнителю")
+                Icon(if (search.open) Icons.Filled.Close else Icons.Filled.Search, "Search this artist")
             }
         }
         Text(
@@ -200,13 +200,13 @@ fun ArtistScreen(artistId: String, initialName: String, onBack: () -> Unit) {
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
                     .focusRequester(focus),
-                placeholder = { Text("Трек ${state.name}") },
+                placeholder = { Text("Search ${state.name}...") },
                 leadingIcon = { Icon(Icons.Filled.Search, null) },
                 singleLine = true,
             )
             when {
                 search.loading -> Loading()
-                search.query.isNotBlank() && search.results.isEmpty() -> EmptyText("Ничего не нашлось")
+                search.query.isNotBlank() && search.results.isEmpty() -> EmptyText("Nothing found")
                 else -> LazyColumn(Modifier.fillMaxSize()) {
                     items(search.results, key = { it.uri }) { t ->
                         TrackRow(t, nowPlaying?.trackUri == t.uri, onClick = { app.player.play(t.uri) })

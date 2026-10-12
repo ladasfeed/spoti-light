@@ -61,9 +61,9 @@ fun SettingsScreen(onBack: () -> Unit) {
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
     ) {
-        TopBar("Настройки", onBack)
+        TopBar("Settings", onBack)
 
-        SectionHeader("Тема")
+        SectionHeader("Theme")
         Row(
             Modifier
                 .fillMaxWidth()
@@ -99,7 +99,7 @@ fun SettingsScreen(onBack: () -> Unit) {
 
         SectionHeader("Daylist")
         Text(
-            "Если Made for you не находит daylist, скопируй ссылку на него в Spotify (Поделиться → Копировать ссылку) и вставь сюда.",
+            "If Made for you can't find your daylist, copy its link in Spotify (Share → Copy link) and paste it here.",
             modifier = Modifier.padding(horizontal = 16.dp),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 13.sp,
@@ -117,11 +117,11 @@ fun SettingsScreen(onBack: () -> Unit) {
             singleLine = true,
         )
 
-        SectionHeader("Аккаунт")
+        SectionHeader("Account")
         OutlinedButton(
             onClick = { app.player.disconnect(); app.auth.logout() },
             modifier = Modifier.padding(horizontal = 16.dp),
-        ) { Text("Выйти") }
+        ) { Text("Log out") }
         Spacer(Modifier.height(32.dp))
     }
 }
@@ -142,14 +142,14 @@ fun SetupScreen(error: String?) {
         Spacer(Modifier.height(24.dp))
         Text("Minispot", fontSize = 36.sp, fontWeight = FontWeight.Black)
         Text(
-            "Один раз создай приложение на developer.spotify.com/dashboard (нужен Premium) и укажи в нём:",
+            "Create an app once at developer.spotify.com/dashboard (Premium required) with these settings:",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         CopyRow(context, "Redirect URI", REDIRECT_URI)
         CopyRow(context, "Android package", PACKAGE_NAME)
         CopyRow(context, "SHA1 fingerprint", SIGNING_SHA1)
         Text(
-            "Отметь Web API и Android SDK. Затем вставь сюда Client ID приложения.",
+            "Enable Web API and Android, then paste the app's Client ID here.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(
@@ -166,7 +166,7 @@ fun SetupScreen(error: String?) {
             },
             enabled = clientId.trim().length >= 16,
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("Войти через Spotify") }
+        ) { Text("Log in with Spotify") }
         if (error != null) Text(error, color = MaterialTheme.colorScheme.error)
     }
 }
@@ -181,7 +181,7 @@ private fun CopyRow(context: Context, label: String, value: String) {
             .clickable {
                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 cm.setPrimaryClip(ClipData.newPlainText(label, value))
-                Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
             }
             .padding(12.dp),
     ) {

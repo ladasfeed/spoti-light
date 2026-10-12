@@ -7,6 +7,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -35,6 +38,7 @@ import app.minispot.ui.components.PlayerSheet
 import app.minispot.ui.screens.ArtistScreen
 import app.minispot.ui.screens.HomeScreen
 import app.minispot.ui.screens.MadeForYouScreen
+import app.minispot.ui.screens.MyTracksScreen
 import app.minispot.ui.screens.RecentsScreen
 import app.minispot.ui.screens.ReleasesScreen
 import app.minispot.ui.screens.SearchScreen
@@ -89,7 +93,7 @@ class MainActivity : ComponentActivity() {
         val data: Uri = intent?.data ?: return
         if (data.scheme != "minispot") return
         lifecycleScope.launch {
-            loginError = app.auth.handleRedirect(data)?.let { "Не удалось войти: $it" }
+            loginError = app.auth.handleRedirect(data)?.let { "Login failed: $it" }
             if (loginError == null) app.player.connect(this@MainActivity)
         }
     }
@@ -113,9 +117,18 @@ class MainActivity : ComponentActivity() {
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                NavHost(nav, startDestination = "home") {
+                // Spotify-style: quick full fade out, then fade in. ~250 ms in total.
+                NavHost(
+                    nav,
+                    startDestination = "home",
+                    enterTransition = { fadeIn(tween(130, delayMillis = 120)) },
+                    exitTransition = { fadeOut(tween(120)) },
+                    popEnterTransition = { fadeIn(tween(130, delayMillis = 120)) },
+                    popExitTransition = { fadeOut(tween(120)) },
+                ) {
                     composable("home") {
                         HomeScreen(
+                            onMyTracks = { nav.navigate("mytracks") },
                             onSearch = { nav.navigate("search") },
                             onRecents = { nav.navigate("recents") },
                             onMadeForYou = { nav.navigate("madeforyou") },
@@ -141,6 +154,7 @@ class MainActivity : ComponentActivity() {
                             onBack = { nav.popBackStack() },
                         )
                     }
+                    composable("mytracks") { MyTracksScreen(onBack = { nav.popBackStack() }) }
                     composable("recents") { RecentsScreen(onBack = { nav.popBackStack() }) }
                     composable("madeforyou") { MadeForYouScreen(onBack = { nav.popBackStack() }) }
                     composable("releases") { ReleasesScreen(onBack = { nav.popBackStack() }) }
