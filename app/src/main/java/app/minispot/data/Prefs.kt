@@ -9,7 +9,7 @@ class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("minispot", Context.MODE_PRIVATE)
 
     var clientId: String
-        get() = sp.getString("client_id", "") ?: ""
+        get() = sp.getString("client_id", null) ?: DEFAULT_CLIENT_ID
         set(v) = sp.edit().putString("client_id", v.trim()).apply()
 
     var accessToken: String?
@@ -54,3 +54,6 @@ class Prefs(context: Context) {
             .apply()
     }
 }
+
+/** Client ID of the "Lightspot" app in the Spotify developer dashboard. Not a secret (PKCE flow). */
+const val DEFAULT_CLIENT_ID = "77250c2f983c4f3ab90c0e8135d92d58"
