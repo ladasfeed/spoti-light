@@ -24,9 +24,11 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.lang.ref.WeakReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -214,24 +216,37 @@ class RemotePlayer(private val appContext: Context, private val prefs: Prefs) {
     }
 
     /**
-     * Starts a context (album/playlist/Liked Songs) at a given position, so playback continues
-     * inside it. If Spotify refuses that context, the track itself is played instead.
+     * Starts a context (album/playlist) at a given position, so playback continues inside it.
+     * Spotify sometimes accepts the command and plays nothing, so the result is checked against
+     * what the app actually reports, and the track itself is played if it didn't start.
      */
-    fun playAt(contextUri: String, index: Int, fallbackTrackUri: String? = null) = withRemote { r ->
-        val start = {
-            r.playerApi.skipToIndex(contextUri, index).setErrorCallback { e ->
-                if (fallbackTrackUri != null) {
-                    Log.w("Minispot", "skipToIndex($contextUri, $index) failed, playing the track", e)
-                    r.playerApi.play(fallbackTrackUri).setErrorCallback(report("Play"))
-                } else {
-                    report("Play")(e)
-                }
+    fun playAt(contextUri: String, index: Int, fallbackTrackUri: String? = null, expectedName: String? = null) {
+        scope.launch {
+            setShuffleNow(false)
+            val started = trySkipToIndex(contextUri, index) &&
+                (fallbackTrackUri == null || awaitTrack(fallbackTrackUri, expectedName, 3000))
+            when {
+                started -> Unit
+                fallbackTrackUri != null -> play(fallbackTrackUri)
+                else -> _errors.tryEmit("Play failed")
             }
         }
-        r.playerApi.setShuffle(false)
-            .setResultCallback { start() }
-            .setErrorCallback { start() }
     }
+
+    suspend fun setShuffleNow(on: Boolean) {
+        runCatching { awaitRemote().playerApi.setShuffle(on).awaitCall() }
+    }
+
+    suspend fun trySkipToIndex(contextUri: String, index: Int): Boolean =
+        runCatching { awaitRemote().playerApi.skipToIndex(contextUri, index).awaitCall() }
+            .onFailure { Log.w("Minispot", "skipToIndex($contextUri, $index) failed", it) }
+            .isSuccess
+
+    /** Waits until the Spotify app reports this track as playing (not paused). */
+    suspend fun awaitTrack(uri: String, name: String?, timeoutMs: Long): Boolean =
+        withTimeoutOrNull(timeoutMs) {
+            nowPlaying.first { np -> np != null && !np.isPaused && (np.trackUri == uri || (name != null && np.name == name)) }
+        } != null
 
     /** The Liked Songs URI that Spotify accepted last time, reused to start at a given track. */
     var likedContextUri: String? = null

@@ -10,6 +10,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 
 class ApiException(val code: Int, message: String) : Exception(message)
 
@@ -18,6 +19,11 @@ class ApiException(val code: Int, message: String) : Exception(message)
  * February 2026 changes are used: search is capped at 10 results per request.
  */
 class SpotifyApi(private val auth: SpotifyAuth) {
+    /**
+     * A long 429 blocks one group of endpoints ("artists", "search", "me"…) for hours. Requests to a
+     * blocked group fail right away instead of reaching Spotify, which could extend the block.
+     */
+    private val blockedUntil = ConcurrentHashMap<String, Long>()
 
     suspend fun me(): JSONObject = get("/me")
 
@@ -50,6 +56,25 @@ class SpotifyApi(private val auth: SpotifyAuth) {
     /** Playlist name only; contents of playlists the user doesn't own are hidden from dev-mode apps. */
     suspend fun playlistName(id: String): String? =
         runCatching { get("/playlists/$id", "fields" to "name").optString("name") }.getOrNull()?.takeIf { it.isNotBlank() }
+
+    /**
+     * Starts [contextUri] (Liked Songs works as "spotify:user:<id>:collection") at [offsetUri].
+     * Plays on the active device, or on a phone if Spotify reports none as active.
+     */
+    suspend fun startPlayback(contextUri: String, offsetUri: String?) {
+        val body = JSONObject().put("context_uri", contextUri)
+        offsetUri?.let { body.put("offset", JSONObject().put("uri", it)) }
+        try {
+            request("PUT", "/me/player/play", body = body)
+        } catch (e: ApiException) {
+            if (e.code != 404) throw e
+            val devices = get("/me/player/devices").optJSONArray("devices")?.mapObjects { it }.orEmpty()
+            val device = devices.firstOrNull { it.optString("type").equals("Smartphone", ignoreCase = true) }
+                ?: devices.firstOrNull()
+                ?: throw e
+            request("PUT", "/me/player/play", "device_id" to device.getString("id"), body = body)
+        }
+    }
 
     /** What's playing now and what plays next (the context's upcoming tracks included). */
     suspend fun queue(): Pair<Track?, List<Track>> {
@@ -111,42 +136,66 @@ class SpotifyApi(private val auth: SpotifyAuth) {
 
     // --- HTTP ---
 
-    private suspend fun get(path: String, vararg params: Pair<String, String>): JSONObject {
+    private suspend fun get(path: String, vararg params: Pair<String, String>): JSONObject =
+        request("GET", path, *params)
+
+    private suspend fun request(
+        method: String,
+        path: String,
+        vararg params: Pair<String, String>,
+        body: JSONObject? = null,
+    ): JSONObject {
+        val group = path.trimStart('/').substringBefore('/')
+        blockedUntil[group]?.let { until ->
+            val left = (until - System.currentTimeMillis()) / 1000
+            if (left > 0) throw ApiException(429, rateLimitMessage(left))
+        }
         val query = params.joinToString("&") { (k, v) -> "$k=${URLEncoder.encode(v, "UTF-8")}" }
         val url = "https://api.spotify.com/v1$path" + if (query.isNotEmpty()) "?$query" else ""
         var attempt = 0
         var forceRefresh = false
         while (true) {
             val token = auth.accessToken(forceRefresh)
-            val (code, body, retryAfter) = withContext(Dispatchers.IO) {
+            val (code, responseBody, retryAfter) = withContext(Dispatchers.IO) {
                 val conn = URL(url).openConnection() as HttpURLConnection
+                conn.requestMethod = method
                 conn.setRequestProperty("Authorization", "Bearer $token")
                 conn.connectTimeout = 15_000
                 conn.readTimeout = 20_000
+                if (body != null) {
+                    conn.doOutput = true
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                }
                 val code = conn.responseCode
                 val stream = if (code in 200..299) conn.inputStream else conn.errorStream
                 Triple(code, stream?.bufferedReader()?.use { it.readText() }.orEmpty(), conn.getHeaderField("Retry-After"))
             }
             attempt++
             when {
-                code in 200..299 -> return if (body.isBlank()) JSONObject() else JSONObject(body)
+                code in 200..299 -> return if (responseBody.isBlank()) JSONObject() else JSONObject(responseBody)
                 code == 401 && attempt == 1 -> forceRefresh = true
                 code == 429 -> {
                     // Short waits are retried; long ones (dev-mode quota) are reported instead of hanging.
                     val wait = retryAfter?.toLongOrNull() ?: 2L
+                    if (wait > 20) blockedUntil[group] = System.currentTimeMillis() + wait * 1000
                     if (wait > 20 || attempt > 3) throw ApiException(429, rateLimitMessage(wait))
                     delay(wait * 1000)
                 }
                 code >= 500 && attempt <= 2 -> delay(1000)
-                else -> throw ApiException(code, errorMessage(code, body))
+                else -> throw ApiException(code, errorMessage(code, responseBody))
             }
         }
     }
 
     private fun rateLimitMessage(waitSeconds: Long): String {
         val minutes = (waitSeconds + 59) / 60
-        return if (waitSeconds <= 60) "Spotify rate limit hit, try again in a minute."
-        else "Spotify rate limit hit, try again in about $minutes min."
+        val hours = (waitSeconds + 1799) / 3600
+        return when {
+            waitSeconds <= 60 -> "Spotify rate limit hit, try again in a minute."
+            minutes < 90 -> "Spotify rate limit hit, try again in about $minutes min."
+            else -> "Spotify paused these requests for this app, try again in about $hours h."
+        }
     }
 
     private fun errorMessage(code: Int, body: String): String {
@@ -172,6 +221,8 @@ class SpotifyApi(private val auth: SpotifyAuth) {
             imageUrl = album?.optJSONArray("images")?.smallestImage(),
             durationMs = t.optLong("duration_ms"),
             releaseDate = album?.optString("release_date"),
+            // Only first-disc positions match the album's track index.
+            albumIndex = t.optInt("track_number").takeIf { it > 0 && t.optInt("disc_number", 1) == 1 }?.minus(1),
         )
     }
 

@@ -1,20 +1,14 @@
 package app.minispot.data
 
 import android.content.Context
-import app.minispot.api.Album
 import app.minispot.api.ApiException
 import app.minispot.api.Artist
-import app.minispot.api.ArtistRef
 import app.minispot.api.SpotifyApi
 import app.minispot.api.Track
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -30,24 +24,29 @@ data class ReleasesPage(
 }
 
 /**
- * "Last releases": tracks from albums and singles released in the last 14 days by followed artists.
- * Spotify removed the new-releases endpoint, so followed artists are checked a few at a time and
- * results arrive in chunks (about 10 tracks per [loadMore]). Each artist's check is cached for a
- * few hours so reopening the screen doesn't cost requests again.
+ * "Last releases": tracks released in the last 14 days by followed artists. Spotify removed the
+ * new-releases endpoint and limits the artist and album endpoints hard for development-mode apps,
+ * so each artist is checked with one track search narrowed by year, one artist after another with
+ * pauses between requests. Results arrive in chunks (about 10 tracks per [loadMore]). Each artist's check is cached for
+ * half a day so reopening the screen costs nothing.
  */
 class ReleasesRepo(context: Context, private val api: SpotifyApi) {
-    private val file = File(context.filesDir, "releases-v2.json")
+    private val file = File(context.filesDir, "releases-v3.json")
     private val mutex = Mutex()
 
     private var artists: List<Artist>? = null
     private var artistsAt = 0L
-    /** artistId → (checkedAt, recent releases). */
-    private val scans = HashMap<String, Pair<Long, List<Album>>>()
-    private val albumTracks = HashMap<String, List<Track>>()
+    /** artistId → (checkedAt, that artist's recent tracks). */
+    private val scans = HashMap<String, Pair<Long, List<Track>>>()
 
     private var nextArtist = 0
     private val found = LinkedHashMap<String, Track>()
     private var loaded = false
+    private var lastRequestAt = 0L
+
+    init {
+        File(context.filesDir, "releases-v2.json").delete()
+    }
 
     fun current(): ReleasesPage = ReleasesPage(sorted(), nextArtist, artists?.size ?: Int.MAX_VALUE)
 
@@ -58,7 +57,6 @@ class ReleasesRepo(context: Context, private val api: SpotifyApi) {
         if (dropCache) {
             artists = null
             scans.clear()
-            albumTracks.clear()
             file.delete()
         }
     }
@@ -72,21 +70,14 @@ class ReleasesRepo(context: Context, private val api: SpotifyApi) {
                     loaded = true
                 }
                 val all = followedArtists()
-                val cutoff = LocalDate.now().minusDays(14)
-                val limiter = Semaphore(2)
+                val today = LocalDate.now()
+                val cutoff = today.minusDays(14)
                 val before = found.size
                 try {
                     while (nextArtist < all.size && found.size - before < minNewTracks) {
-                        val batch = all.subList(nextArtist, minOf(nextArtist + 6, all.size))
-                        val releases = coroutineScope {
-                            batch.map { artist -> async { limiter.withPermit { recentReleases(artist, cutoff) } } }
-                                .awaitAll().flatten().distinctBy { it.id }
-                        }
-                        for (album in releases) {
-                            for (t in tracksOf(album)) found.putIfAbsent(t.uri, t)
-                        }
-                        nextArtist += batch.size
-                        onProgress(current())
+                        val added = recentTracks(all[nextArtist], cutoff, today).count { found.putIfAbsent(it.uri, it) == null }
+                        nextArtist++
+                        if (added > 0 || nextArtist % 5 == 0) onProgress(current())
                     }
                 } finally {
                     saveCache()
@@ -105,38 +96,48 @@ class ReleasesRepo(context: Context, private val api: SpotifyApi) {
         }
     }
 
-    private suspend fun recentReleases(artist: Artist, cutoff: LocalDate): List<Album> {
-        scans[artist.id]?.let { (at, albums) ->
-            if (System.currentTimeMillis() - at < SCAN_TTL) return albums.filter { isOnOrAfter(it.releaseDate, cutoff) }
+    private suspend fun recentTracks(artist: Artist, cutoff: LocalDate, today: LocalDate): List<Track> {
+        scans[artist.id]?.let { (at, tracks) ->
+            if (System.currentTimeMillis() - at < SCAN_TTL) return tracks.filter { isOnOrAfter(it.releaseDate, cutoff) }
         }
-        // Singles and albums are listed per group, newest first, so the first few of each are enough.
-        val albums = try {
-            listOf("single", "album").flatMap { group -> api.artistAlbums(artist.id, group, 0, 5).items }
-                .filter { isOnOrAfter(it.releaseDate, cutoff) }
+        // Search narrows by year only, so recent tracks are picked out by their release date.
+        val years = if (cutoff.year == today.year) "${today.year}" else "${cutoff.year}-${today.year}"
+        val query = "artist:\"${artist.name.replace("\"", "")}\" year:$years"
+        val result = mutableListOf<Track>()
+        try {
+            var offset = 0
+            while (offset < MAX_RESULTS_PER_ARTIST) {
+                pace()
+                val page = api.searchTracks(query, offset)
+                result += page.items.filter { t -> t.artists.any { it.id == artist.id } && isOnOrAfter(t.releaseDate, cutoff) }
+                if (!page.hasMore || page.items.size < 10) break
+                offset += page.items.size
+            }
         } catch (e: Exception) {
             if (e.isFatalApiError()) throw e
-            emptyList() // One broken artist shouldn't block the rest.
+            // One broken artist shouldn't block the rest.
         }
-        scans[artist.id] = System.currentTimeMillis() to albums
-        return albums
+        scans[artist.id] = System.currentTimeMillis() to result
+        return result
     }
 
-    private suspend fun tracksOf(album: Album): List<Track> = albumTracks[album.id] ?: try {
-        api.albumTracks(album).also { albumTracks[album.id] = it }
-    } catch (e: Exception) {
-        if (e.isFatalApiError()) throw e
-        emptyList()
+    /** Keeps requests spread out; bursts are what trigger Spotify's long blocks. */
+    private suspend fun pace() {
+        val wait = lastRequestAt + REQUEST_GAP_MS - System.currentTimeMillis()
+        if (wait > 0) delay(wait)
+        lastRequestAt = System.currentTimeMillis()
     }
 
+    /** Newest first; a song that came out as a single and then on an album is listed once. */
     private fun sorted(): List<Track> = found.values.sortedWith(
         compareByDescending<Track> { it.releaseDate.orEmpty() }
             .thenBy { it.albumUri.orEmpty() }
             .thenBy { it.albumIndex ?: 0 }
-    )
+    ).distinctBy { it.name.lowercase() + "|" + it.artists.firstOrNull()?.id }
 
-    private fun isOnOrAfter(releaseDate: String, cutoff: LocalDate): Boolean {
+    private fun isOnOrAfter(releaseDate: String?, cutoff: LocalDate): Boolean {
         // Only day-precision dates can be recent; "2026" or "2026-10" are old catalogue entries.
-        if (releaseDate.length != 10) return false
+        if (releaseDate == null || releaseDate.length != 10) return false
         return runCatching { !LocalDate.parse(releaseDate).isBefore(cutoff) }.getOrDefault(false)
     }
 
@@ -157,13 +158,8 @@ class ReleasesRepo(context: Context, private val api: SpotifyApi) {
             val scansJson = json.getJSONObject("scans")
             for (id in scansJson.keys()) {
                 val o = scansJson.getJSONObject(id)
-                val albums = o.getJSONArray("albums")
-                scans[id] = o.getLong("at") to (0 until albums.length()).map { albums.getJSONObject(it).toAlbum() }
-            }
-            val tracksJson = json.getJSONObject("tracks")
-            for (id in tracksJson.keys()) {
-                val arr = tracksJson.getJSONArray(id)
-                albumTracks[id] = (0 until arr.length()).map { arr.getJSONObject(it).toTrack() }
+                val tracks = o.getJSONArray("tracks")
+                scans[id] = o.getLong("at") to (0 until tracks.length()).map { tracks.getJSONObject(it).toTrack() }
             }
         }
     }
@@ -178,41 +174,20 @@ class ReleasesRepo(context: Context, private val api: SpotifyApi) {
                 }))
             }
             val scansJson = JSONObject()
-            val keepAlbums = HashSet<String>()
             for ((id, scan) in scans) {
                 if (now - scan.first > SCAN_TTL) continue
-                scan.second.forEach { keepAlbums += it.id }
-                scansJson.put(id, JSONObject().put("at", scan.first).put("albums", JSONArray().apply { scan.second.forEach { put(it.toJson()) } }))
+                scansJson.put(id, JSONObject().put("at", scan.first).put("tracks", JSONArray().apply { scan.second.forEach { put(it.toJson()) } }))
             }
             json.put("scans", scansJson)
-            val tracksJson = JSONObject()
-            for ((id, tracks) in albumTracks) {
-                if (id in keepAlbums) tracksJson.put(id, JSONArray().apply { tracks.forEach { put(it.toJson()) } })
-            }
-            json.put("tracks", tracksJson)
             file.writeText(json.toString())
         }
     }
 
-    private fun Album.toJson(): JSONObject = JSONObject()
-        .put("id", id).put("name", name).put("type", type).put("releaseDate", releaseDate).put("imageUrl", imageUrl)
-        .put("artists", JSONArray().apply { artists.forEach { put(JSONObject().put("id", it.id).put("name", it.name)) } })
-
-    private fun JSONObject.toAlbum(): Album {
-        val arr = getJSONArray("artists")
-        return Album(
-            id = getString("id"),
-            name = getString("name"),
-            type = optString("type"),
-            releaseDate = optString("releaseDate"),
-            imageUrl = optNullableString("imageUrl"),
-            artists = (0 until arr.length()).map { arr.getJSONObject(it).let { a -> ArtistRef(a.getString("id"), a.getString("name")) } },
-        )
-    }
-
     private companion object {
-        const val SCAN_TTL = 6L * 3600 * 1000
+        const val SCAN_TTL = 12L * 3600 * 1000
         const val ARTISTS_TTL = 24L * 3600 * 1000
+        const val REQUEST_GAP_MS = 350L
+        const val MAX_RESULTS_PER_ARTIST = 20
     }
 }
 

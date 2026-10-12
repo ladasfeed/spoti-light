@@ -1,7 +1,9 @@
 package app.minispot
 
 import android.app.Application
+import android.util.Log
 import app.minispot.api.SpotifyApi
+import app.minispot.api.Track
 import app.minispot.auth.SpotifyAuth
 import app.minispot.data.LikedRepo
 import app.minispot.data.Prefs
@@ -36,6 +38,22 @@ class MinispotApp : Application() {
 
     /** Liked Songs as a playable context for App Remote. */
     suspend fun likedSongsUri(): String = player.likedContextUri ?: "spotify:user:${userId()}:collection"
+
+    /**
+     * Starts Liked Songs at [track] so the following tracks come from Liked Songs too. The Web API
+     * accepts Liked Songs plus a starting track; App Remote has no documented Liked Songs URI and is
+     * only the backup. Each step is checked against what actually plays; the track alone is the last resort.
+     */
+    suspend fun playLikedAt(track: Track, index: Int) {
+        player.setShuffleNow(false)
+        val viaWebApi = runCatching { api.startPlayback("spotify:user:${userId()}:collection", track.uri) }
+            .onFailure { Log.w("Minispot", "Web API play failed", it) }
+            .isSuccess
+        if (viaWebApi && player.awaitTrack(track.uri, track.name, 4000)) return
+        val likedUri = runCatching { likedSongsUri() }.getOrNull()
+        if (likedUri != null && player.trySkipToIndex(likedUri, index) && player.awaitTrack(track.uri, track.name, 3000)) return
+        player.play(track.uri)
+    }
 
     companion object {
         lateinit var instance: MinispotApp

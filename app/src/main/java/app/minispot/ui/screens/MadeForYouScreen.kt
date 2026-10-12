@@ -98,7 +98,7 @@ class MadeForYouViewModel : ViewModel() {
 
     fun playTrack(index: Int, track: ListItem) {
         val uri = state.value.contextUri
-        if (uri != null && track.uri.orEmpty().startsWith("spotify:track:")) player.playAt(uri, index, fallbackTrackUri = track.uri)
+        if (uri != null && track.uri.orEmpty().startsWith("spotify:track:")) player.playAt(uri, index, fallbackTrackUri = track.uri, expectedName = track.title)
         else player.playItem(track)
     }
 

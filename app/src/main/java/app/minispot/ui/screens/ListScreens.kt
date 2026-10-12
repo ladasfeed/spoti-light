@@ -205,7 +205,7 @@ fun ReleasesScreen(onBack: () -> Unit, vm: ReleasesViewModel = viewModel()) {
                     onClick = {
                         val album = t.albumUri
                         val index = t.albumIndex
-                        if (album != null && index != null) app.player.playAt(album, index, fallbackTrackUri = t.uri)
+                        if (album != null && index != null) app.player.playAt(album, index, fallbackTrackUri = t.uri, expectedName = t.name)
                         else app.player.play(t.uri)
                     },
                     trailing = t.releaseDate?.let { runCatching { LocalDate.parse(it).format(dateFormat) }.getOrNull() },
@@ -275,11 +275,7 @@ fun MyTracksScreen(onBack: () -> Unit, vm: MyTracksViewModel = viewModel()) {
                         isCurrent = nowPlaying?.trackUri == t.uri,
                         onClick = {
                             // Play inside Liked Songs so the next tracks follow in the same order.
-                            scope.launch {
-                                runCatching { app.likedSongsUri() }
-                                    .onSuccess { app.player.playAt(it, index, fallbackTrackUri = t.uri) }
-                                    .onFailure { app.player.play(t.uri) }
-                            }
+                            scope.launch { app.playLikedAt(t, index) }
                         },
                     )
                 }
