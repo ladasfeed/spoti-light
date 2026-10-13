@@ -194,7 +194,7 @@ fun ReleasesScreen(onBack: () -> Unit, vm: ReleasesViewModel = viewModel()) {
             IconButton(onClick = vm::refresh) { Icon(Icons.Filled.Refresh, "Refresh") }
         }
         if (state.tracks.isEmpty() && !state.loading && !state.hasMore && state.error == null) {
-            EmptyText("Nothing new from your artists in the last two weeks")
+            EmptyText("Nothing new from your artists in the last month")
             return@Column
         }
         LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {

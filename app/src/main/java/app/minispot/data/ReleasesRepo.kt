@@ -24,14 +24,14 @@ data class ReleasesPage(
 }
 
 /**
- * "Last releases": tracks released in the last 14 days by followed artists. Spotify removed the
+ * "Last releases": tracks released in the last [WINDOW_DAYS] days by followed artists. Spotify removed the
  * new-releases endpoint and limits the artist and album endpoints hard for development-mode apps,
  * so each artist is checked with one track search narrowed by year, one artist after another with
  * pauses between requests. Results arrive in chunks (about 10 tracks per [loadMore]). Each artist's check is cached for
  * half a day so reopening the screen costs nothing.
  */
 class ReleasesRepo(context: Context, private val api: SpotifyApi) {
-    private val file = File(context.filesDir, "releases-v3.json")
+    private val file = File(context.filesDir, "releases-v4.json")
     private val mutex = Mutex()
 
     private var artists: List<Artist>? = null
@@ -45,7 +45,8 @@ class ReleasesRepo(context: Context, private val api: SpotifyApi) {
     private var lastRequestAt = 0L
 
     init {
-        File(context.filesDir, "releases-v2.json").delete()
+        // Older caches were filtered to two weeks, so they'd miss the rest of the month.
+        listOf("releases-v2.json", "releases-v3.json").forEach { File(context.filesDir, it).delete() }
     }
 
     fun current(): ReleasesPage = ReleasesPage(sorted(), nextArtist, artists?.size ?: Int.MAX_VALUE)
@@ -71,7 +72,7 @@ class ReleasesRepo(context: Context, private val api: SpotifyApi) {
                 }
                 val all = followedArtists()
                 val today = LocalDate.now()
-                val cutoff = today.minusDays(14)
+                val cutoff = today.minusDays(WINDOW_DAYS)
                 val before = found.size
                 try {
                     while (nextArtist < all.size && found.size - before < minNewTracks) {
@@ -184,6 +185,7 @@ class ReleasesRepo(context: Context, private val api: SpotifyApi) {
     }
 
     private companion object {
+        const val WINDOW_DAYS = 30L
         const val SCAN_TTL = 12L * 3600 * 1000
         const val ARTISTS_TTL = 24L * 3600 * 1000
         const val REQUEST_GAP_MS = 350L
