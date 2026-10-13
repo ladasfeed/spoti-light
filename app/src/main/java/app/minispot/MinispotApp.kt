@@ -10,6 +10,9 @@ import app.minispot.data.Prefs
 import app.minispot.data.RecentsStore
 import app.minispot.data.ReleasesRepo
 import app.minispot.player.RemotePlayer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /** Manual dependency container; the app is small enough not to need DI. */
 class MinispotApp : Application() {
@@ -20,6 +23,8 @@ class MinispotApp : Application() {
     lateinit var recents: RecentsStore
     lateinit var releases: ReleasesRepo
     lateinit var liked: LikedRepo
+    /** Work that outlives screens, like the daily new-releases check. */
+    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
         super.onCreate()
@@ -32,6 +37,7 @@ class MinispotApp : Application() {
         releases = ReleasesRepo(this, api)
         liked = LikedRepo(this, api)
         player.onLikedChanged = { uri, isLiked -> liked.onLikedChanged(uri, isLiked) }
+        releases.start(appScope, auth.loggedIn)
     }
 
     suspend fun userId(): String = prefs.userId ?: api.me().getString("id").also { prefs.userId = it }

@@ -85,6 +85,8 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         if (app.auth.loggedIn.value) app.player.connect(this)
+        // Catches up on the daily releases check if the phone slept through it.
+        app.releases.kick()
     }
 
     override fun onStop() {

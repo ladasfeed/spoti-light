@@ -11,7 +11,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.Row
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -29,6 +31,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,7 +40,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import app.minispot.data.ReleasesPage
+import app.minispot.data.ReleasesState
 import kotlinx.coroutines.Job
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -119,112 +122,83 @@ fun RecentsScreen(onBack: () -> Unit, vm: RecentsViewModel = viewModel()) {
 
 // ---------- Last releases ----------
 
-class ReleasesViewModel : ViewModel() {
-    private val repo = MinispotApp.instance.releases
-
-    data class State(
-        val tracks: List<Track> = emptyList(),
-        val loading: Boolean = false,
-        val hasMore: Boolean = true,
-        val progress: String? = null,
-        val error: String? = null,
-    )
-
-    val state = MutableStateFlow(State())
-    private var job: Job? = null
-
-    init { show(repo.current()); loadMore() }
-
-    /** Fetches the next chunk (about 10 tracks). */
-    fun loadMore() {
-        if (job?.isActive == true || !state.value.hasMore) return
-        job = viewModelScope.launch {
-            state.value = state.value.copy(loading = true, error = null)
-            try {
-                show(repo.loadMore(minNewTracks = 10) { show(it, loading = true) })
-            } catch (e: Exception) {
-                show(repo.current(), error = e.message)
-            }
-        }
-    }
-
-    fun refresh() {
-        job?.cancel()
-        job = viewModelScope.launch {
-            repo.restart(dropCache = true)
-            state.value = State(loading = true)
-            try {
-                show(repo.loadMore(minNewTracks = 10) { show(it, loading = true) })
-            } catch (e: Exception) {
-                show(repo.current(), error = e.message)
-            }
-        }
-    }
-
-    private fun show(page: ReleasesPage, loading: Boolean = false, error: String? = null) {
-        state.value = State(
-            tracks = page.tracks,
-            loading = loading,
-            hasMore = page.hasMore,
-            progress = if (page.totalArtists == Int.MAX_VALUE) null else "Checked ${page.checkedArtists} of ${page.totalArtists} artists",
-            error = error,
-        )
-    }
-}
-
+/** Filled by the daily background check (see ReleasesRepo); the screen only shows its progress. */
 @Composable
-fun ReleasesScreen(onBack: () -> Unit, vm: ReleasesViewModel = viewModel()) {
+fun ReleasesScreen(onBack: () -> Unit) {
     val app = MinispotApp.instance
-    val state by vm.state.collectAsState()
+    val state by app.releases.state.collectAsState()
     val nowPlaying by app.player.nowPlaying.collectAsState()
     val dateFormat = DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH)
-    val listState = rememberLazyListState()
-    val nearEnd by remember {
-        derivedStateOf {
-            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            last >= listState.layoutInfo.totalItemsCount - 3
-        }
-    }
-    LaunchedEffect(nearEnd, state.tracks.size, state.loading) {
-        if (nearEnd && !state.loading && state.error == null) vm.loadMore()
-    }
 
     Column(Modifier.fillMaxSize()) {
         TopBar("Last releases", onBack) {
-            IconButton(onClick = vm::refresh) { Icon(Icons.Filled.Refresh, "Refresh") }
-        }
-        if (state.tracks.isEmpty() && !state.loading && !state.hasMore && state.error == null) {
-            EmptyText("Nothing new from your artists in the last month")
-            return@Column
-        }
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-            items(state.tracks, key = { it.uri }) { t ->
-                TrackRow(
-                    t,
-                    isCurrent = nowPlaying?.trackUri == t.uri,
-                    onClick = {
-                        val album = t.albumUri
-                        val index = t.albumIndex
-                        if (album != null && index != null) app.player.playAt(album, index, fallbackTrackUri = t.uri, expectedName = t.name)
-                        else app.player.play(t.uri)
-                    },
-                    trailing = t.releaseDate?.let { runCatching { LocalDate.parse(it).format(dateFormat) }.getOrNull() },
-                )
+            IconButton(onClick = app.releases::refreshNow, enabled = !state.scanning) {
+                Icon(Icons.Filled.Refresh, "Check again")
             }
-            item(key = "footer") {
-                when {
-                    state.error != null -> ErrorBox(state.error!!, vm::loadMore)
-                    state.loading -> Loading(state.progress ?: "Loading followed artists…")
-                    state.hasMore -> TextButton(onClick = vm::loadMore, modifier = Modifier.fillMaxWidth()) { Text("Load more") }
-                    else -> Text(
-                        state.progress.orEmpty(),
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
+        }
+        ReleasesStatus(state, onRetry = app.releases::refreshNow)
+        when {
+            !state.loaded -> Loading()
+            state.tracks.isEmpty() && !state.scanning && state.error == null && state.completedAt > 0 ->
+                EmptyText("Nothing new from your artists in the last month")
+            else -> LazyColumn(Modifier.fillMaxSize()) {
+                items(state.tracks, key = { it.uri }) { t ->
+                    TrackRow(
+                        t,
+                        isCurrent = nowPlaying?.trackUri == t.uri,
+                        onClick = {
+                            val album = t.albumUri
+                            val index = t.albumIndex
+                            if (album != null && index != null) app.player.playAt(album, index, fallbackTrackUri = t.uri, expectedName = t.name)
+                            else app.player.play(t.uri)
+                        },
+                        trailing = t.releaseDate?.let { runCatching { LocalDate.parse(it).format(dateFormat) }.getOrNull() },
                     )
                 }
             }
         }
+    }
+}
+
+/** Progress of the running check, its error, or when the list was last updated; always above the list. */
+@Composable
+private fun ReleasesStatus(state: ReleasesState, onRetry: () -> Unit) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
+        when {
+            state.scanning -> {
+                if (state.totalArtists > 0) {
+                    LinearProgressIndicator(
+                        progress = { state.checkedArtists.toFloat() / state.totalArtists },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                Text(
+                    if (state.totalArtists > 0) "Checking artists: ${state.checkedArtists} of ${state.totalArtists}"
+                    else "Loading followed artists…",
+                    modifier = Modifier.padding(top = 6.dp),
+                    color = muted,
+                    fontSize = 12.sp,
+                )
+            }
+            state.error != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(state.error, modifier = Modifier.weight(1f), color = muted, fontSize = 12.sp)
+                TextButton(onClick = onRetry) { Text("Retry") }
+            }
+            state.completedAt > 0 -> Text("Updated ${formatUpdated(state.completedAt)}", color = muted, fontSize = 12.sp)
+        }
+    }
+}
+
+private fun formatUpdated(millis: Long): String {
+    val time = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault())
+    val clock = time.format(DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH))
+    return when (time.toLocalDate()) {
+        LocalDate.now() -> "today at $clock"
+        LocalDate.now().minusDays(1) -> "yesterday at $clock"
+        else -> time.format(DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH)) + " at $clock"
     }
 }
 

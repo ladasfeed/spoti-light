@@ -24,6 +24,7 @@ class SpotifyApi(private val auth: SpotifyAuth) {
      * blocked group fail right away instead of reaching Spotify, which could extend the block.
      */
     private val blockedUntil = ConcurrentHashMap<String, Long>()
+    private val blockedByQuota = ConcurrentHashMap.newKeySet<String>()
 
     suspend fun me(): JSONObject = get("/me")
 
@@ -148,7 +149,7 @@ class SpotifyApi(private val auth: SpotifyAuth) {
         val group = path.trimStart('/').substringBefore('/')
         blockedUntil[group]?.let { until ->
             val left = (until - System.currentTimeMillis()) / 1000
-            if (left > 0) throw ApiException(429, rateLimitMessage(left))
+            if (left > 0) throw ApiException(429, rateLimitMessage(left, quota = group in blockedByQuota))
         }
         val query = params.joinToString("&") { (k, v) -> "$k=${URLEncoder.encode(v, "UTF-8")}" }
         val url = "https://api.spotify.com/v1$path" + if (query.isNotEmpty()) "?$query" else ""
@@ -178,8 +179,12 @@ class SpotifyApi(private val auth: SpotifyAuth) {
                 code == 429 -> {
                     // Short waits are retried; long ones (dev-mode quota) are reported instead of hanging.
                     val wait = retryAfter?.toLongOrNull() ?: 2L
-                    if (wait > 20) blockedUntil[group] = System.currentTimeMillis() + wait * 1000
-                    if (wait > 20 || attempt > 3) throw ApiException(429, rateLimitMessage(wait))
+                    val quota = "QUOTA_EXCEEDED" in responseBody
+                    if (wait > 20) {
+                        blockedUntil[group] = System.currentTimeMillis() + wait * 1000
+                        if (quota) blockedByQuota += group else blockedByQuota -= group
+                    }
+                    if (wait > 20 || attempt > 3) throw ApiException(429, rateLimitMessage(wait, quota))
                     delay(wait * 1000)
                 }
                 code >= 500 && attempt <= 2 -> delay(1000)
@@ -188,13 +193,18 @@ class SpotifyApi(private val auth: SpotifyAuth) {
         }
     }
 
-    private fun rateLimitMessage(waitSeconds: Long): String {
+    private fun rateLimitMessage(waitSeconds: Long, quota: Boolean = false): String {
         val minutes = (waitSeconds + 59) / 60
         val hours = (waitSeconds + 1799) / 3600
+        val wait = when {
+            waitSeconds <= 60 -> "a minute"
+            minutes < 90 -> "about $minutes min"
+            else -> "about $hours h"
+        }
         return when {
-            waitSeconds <= 60 -> "Spotify rate limit hit, try again in a minute."
-            minutes < 90 -> "Spotify rate limit hit, try again in about $minutes min."
-            else -> "Spotify paused these requests for this app, try again in about $hours h."
+            quota -> "Spotify's daily request quota for this app is used up, try again in $wait."
+            waitSeconds > 3600 -> "Spotify paused these requests for this app, try again in $wait."
+            else -> "Spotify rate limit hit, try again in $wait."
         }
     }
 
