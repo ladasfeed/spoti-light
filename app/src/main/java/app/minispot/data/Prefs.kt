@@ -50,6 +50,15 @@ class Prefs(context: Context) {
         _theme.value = id
     }
 
+    /** Which hand holds the phone ("left" or "right"); the home screen lines up on that side. */
+    private val _hand = MutableStateFlow(sp.getString("hand", "right") ?: "right")
+    val hand: StateFlow<String> = _hand
+
+    fun setHand(value: String) {
+        sp.edit().putString("hand", value).apply()
+        _hand.value = value
+    }
+
     fun clearAuth() {
         sp.edit()
             .remove("access_token")

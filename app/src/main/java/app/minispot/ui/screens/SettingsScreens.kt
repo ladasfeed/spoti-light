@@ -38,6 +38,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.minispot.MinispotApp
@@ -54,6 +55,7 @@ const val PACKAGE_NAME = "app.minispot"
 fun SettingsScreen(onBack: () -> Unit) {
     val app = MinispotApp.instance
     val theme by app.prefs.theme.collectAsState()
+    val hand by app.prefs.hand.collectAsState()
     var daylist by remember { mutableStateOf(app.prefs.daylistLink) }
 
     Column(
@@ -62,6 +64,34 @@ fun SettingsScreen(onBack: () -> Unit) {
             .verticalScroll(rememberScrollState()),
     ) {
         TopBar("Settings", onBack)
+
+        SectionHeader("Hand")
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            listOf("left" to "Left", "right" to "Right").forEach { (id, title) ->
+                val selected = id == hand
+                Text(
+                    title,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .border(
+                            width = if (selected) 2.dp else 1.dp,
+                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        .clickable { app.prefs.setHand(id) }
+                        .padding(vertical = 14.dp),
+                    textAlign = TextAlign.Center,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                )
+            }
+        }
 
         SectionHeader("Theme")
         Row(
