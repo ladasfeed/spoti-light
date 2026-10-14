@@ -47,6 +47,10 @@ import app.minispot.ui.screens.SettingsScreen
 import app.minispot.ui.screens.SetupScreen
 import app.minispot.ui.theme.MinispotTheme
 import app.minispot.ui.theme.themeById
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
+import app.minispot.ui.theme.fontById
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -62,15 +66,21 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeId by app.prefs.theme.collectAsState()
             val theme = themeById(themeId)
+            val fontId by app.prefs.font.collectAsState()
+            val fontScale by app.prefs.fontScale.collectAsState()
+            val density = LocalDensity.current
             val loggedIn by app.auth.loggedIn.collectAsState()
 
             val bar = theme.background.toArgb()
             LaunchedEffect(bar) { enableEdgeToEdge(SystemBarStyle.dark(bar), SystemBarStyle.dark(bar)) }
 
-            MinispotTheme(theme) {
-                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    Box(Modifier.safeDrawingPadding()) {
-                        if (loggedIn) MainContent() else SetupScreen(loginError)
+            // The text size setting scales every sp on top of the system font size.
+            CompositionLocalProvider(LocalDensity provides Density(density.density, density.fontScale * fontScale)) {
+                MinispotTheme(theme, fontById(fontId).family) {
+                    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                        Box(Modifier.safeDrawingPadding()) {
+                            if (loggedIn) MainContent() else SetupScreen(loginError)
+                        }
                     }
                 }
             }

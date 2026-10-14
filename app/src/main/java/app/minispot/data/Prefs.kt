@@ -59,6 +59,33 @@ class Prefs(context: Context) {
         _hand.value = value
     }
 
+    /** Text size multiplier on top of the system one. */
+    private val _fontScale = MutableStateFlow(sp.getFloat("font_scale", 1f))
+    val fontScale: StateFlow<Float> = _fontScale
+
+    fun setFontScale(value: Float) {
+        sp.edit().putFloat("font_scale", value).apply()
+        _fontScale.value = value
+    }
+
+    private val _font = MutableStateFlow(sp.getString("font", "roboto") ?: "roboto")
+    val font: StateFlow<String> = _font
+
+    fun setFont(id: String) {
+        sp.edit().putString("font", id).apply()
+        _font.value = id
+    }
+
+    /** Home panel height in dp; negative means the default. */
+    var homePanelHeight: Float
+        get() = sp.getFloat("home_panel_height", -1f)
+        set(v) = sp.edit().putFloat("home_panel_height", v).apply()
+
+    /** Gap between the home panel and the bottom of the screen, in dp. */
+    var homePanelBottom: Float
+        get() = sp.getFloat("home_panel_bottom", 0f)
+        set(v) = sp.edit().putFloat("home_panel_bottom", v).apply()
+
     fun clearAuth() {
         sp.edit()
             .remove("access_token")

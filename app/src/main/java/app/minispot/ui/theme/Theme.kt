@@ -1,9 +1,12 @@
 package app.minispot.ui.theme
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 
 data class AppTheme(
     val id: String,
@@ -47,7 +50,7 @@ val Themes = listOf(
 fun themeById(id: String) = Themes.firstOrNull { it.id == id } ?: Themes.first()
 
 @Composable
-fun MinispotTheme(theme: AppTheme, content: @Composable () -> Unit) {
+fun MinispotTheme(theme: AppTheme, font: FontFamily = FontFamily.Default, content: @Composable () -> Unit) {
     val scheme = darkColorScheme(
         primary = theme.accent,
         onPrimary = theme.onAccent,
@@ -66,5 +69,17 @@ fun MinispotTheme(theme: AppTheme, content: @Composable () -> Unit) {
         outline = theme.textDim.copy(alpha = 0.4f),
         outlineVariant = theme.surfaceHigh,
     )
-    MaterialTheme(colorScheme = scheme, content = content)
+    MaterialTheme(colorScheme = scheme, typography = typographyWith(font), content = content)
+}
+
+private fun typographyWith(font: FontFamily): Typography {
+    val t = Typography()
+    fun TextStyle.f() = copy(fontFamily = font)
+    return Typography(
+        displayLarge = t.displayLarge.f(), displayMedium = t.displayMedium.f(), displaySmall = t.displaySmall.f(),
+        headlineLarge = t.headlineLarge.f(), headlineMedium = t.headlineMedium.f(), headlineSmall = t.headlineSmall.f(),
+        titleLarge = t.titleLarge.f(), titleMedium = t.titleMedium.f(), titleSmall = t.titleSmall.f(),
+        bodyLarge = t.bodyLarge.f(), bodyMedium = t.bodyMedium.f(), bodySmall = t.bodySmall.f(),
+        labelLarge = t.labelLarge.f(), labelMedium = t.labelMedium.f(), labelSmall = t.labelSmall.f(),
+    )
 }

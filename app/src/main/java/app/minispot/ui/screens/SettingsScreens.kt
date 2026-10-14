@@ -38,14 +38,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.minispot.MinispotApp
 import app.minispot.auth.REDIRECT_URI
 import app.minispot.ui.components.SectionHeader
 import app.minispot.ui.components.TopBar
+import app.minispot.ui.theme.FontScales
+import app.minispot.ui.theme.Fonts
 import app.minispot.ui.theme.Themes
+import app.minispot.ui.theme.fontById
 
 /** SHA1 of app/keystore/minispot.jks, which signs every build. Spotify needs it for App Remote. */
 const val SIGNING_SHA1 = "EC:61:11:EF:5E:E8:2F:5C:4E:7B:BB:84:29:B8:37:5C:BC:EC:8A:AB"
@@ -56,6 +58,8 @@ fun SettingsScreen(onBack: () -> Unit) {
     val app = MinispotApp.instance
     val theme by app.prefs.theme.collectAsState()
     val hand by app.prefs.hand.collectAsState()
+    val fontId by app.prefs.font.collectAsState()
+    val fontScale by app.prefs.fontScale.collectAsState()
     var daylist by remember { mutableStateOf(app.prefs.daylistLink) }
 
     Column(
@@ -66,31 +70,19 @@ fun SettingsScreen(onBack: () -> Unit) {
         TopBar("Settings", onBack)
 
         SectionHeader("Hand")
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            listOf("left" to "Left", "right" to "Right").forEach { (id, title) ->
-                val selected = id == hand
-                Text(
-                    title,
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .border(
-                            width = if (selected) 2.dp else 1.dp,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(12.dp),
-                        )
-                        .clickable { app.prefs.setHand(id) }
-                        .padding(vertical = 14.dp),
-                    textAlign = TextAlign.Center,
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                )
-            }
+        ChoiceRow(listOf("left", "right"), selected = hand, onSelect = app.prefs::setHand) { id ->
+            Text(if (id == "left") "Left" else "Right")
+        }
+
+        SectionHeader("Text size")
+        ChoiceRow(FontScales.map { it.first }, selected = fontScale, onSelect = app.prefs::setFontScale) { scale ->
+            Text(FontScales.first { it.first == scale }.second)
+        }
+
+        SectionHeader("Font")
+        ChoiceRow(Fonts.map { it.id }, selected = fontId, onSelect = app.prefs::setFont) { id ->
+            val font = fontById(id)
+            Text(font.title, fontFamily = font.family, fontSize = 13.sp, maxLines = 1)
         }
 
         SectionHeader("Theme")
@@ -153,6 +145,40 @@ fun SettingsScreen(onBack: () -> Unit) {
             modifier = Modifier.padding(horizontal = 16.dp),
         ) { Text("Log out") }
         Spacer(Modifier.height(32.dp))
+    }
+}
+
+/** A row of equal-width options with the selected one outlined in the accent color. */
+@Composable
+private fun <T> ChoiceRow(
+    options: List<T>,
+    selected: T,
+    onSelect: (T) -> Unit,
+    label: @Composable (T) -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(12.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        options.forEach { option ->
+            val isSelected = option == selected
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(shape)
+                    .background(colors.surfaceVariant)
+                    .border(if (isSelected) 2.dp else 1.dp, if (isSelected) colors.primary else colors.surfaceVariant, shape)
+                    .clickable { onSelect(option) }
+                    .padding(vertical = 14.dp, horizontal = 4.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                label(option)
+            }
+        }
     }
 }
 
